@@ -16,6 +16,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.storage_backend.connector.base_connector import \
@@ -49,6 +50,8 @@ class ParsedRemoteURL:
     ports: List[int]
     paths: List[str]
     query_params: List[Dict[str, str]]
+    usernames: List[Optional[str]]
+    passwords: List[Optional[str]]
 
 
 def parse_remote_url(url: str) -> ParsedRemoteURL:
@@ -61,40 +64,30 @@ def parse_remote_url(url: str) -> ParsedRemoteURL:
     Raises:
         ValueError: If the URL is invalid.
     """
-    pattern = r"(.+)://(.*)"
-    m = re.match(pattern, url)
-    if m is None:
-        logger.error(f"Cannot parse remote_url {url} in the config")
-        raise ValueError(f"Invalid remote url {url}")
-
-    connector_type, hosts_section = m.groups()
-
     hosts = []
     ports = []
     paths = []
+    usernames = []
+    passwords = []
     query_params = []
+    schemes = []
 
-    for host_def in hosts_section.split(","):
-        host_pattern = r"""
-                ^
-                ([^:]+)        # hostname
-                :              # :
-                (\d+)          # port
-                (/?[^?]*)      # path（optional, start with /）
-                (?:\?(.*))?    # query（optional，? content after ?）
-                $
-            """
-        match = re.match(host_pattern, host_def, re.VERBOSE)
+    for conn in url.split(","):
+        pattern = r"(?P<scheme>[^:]+)://(?P<body>.+)"
+        m = re.match(pattern, url)
+        if not m:
+            raise ValueError(f"Invalid remote url {url}")
 
-        if not match:
-            raise ValueError(
-                f"Invalid host definition: {host_def} in URL: {url}")
+        parsed = urlparse(conn)
 
-        host = match.group(1)
-        port = int(match.group(2))
-        path = match.group(3).lstrip('/')
+        if not parsed.hostname or not parsed.port:
+            raise ValueError(f"Invalid host:port pair in remote url {url}")
+
+        host = parsed.hostname
+        port = parsed.port
+        path = parsed.path
         path = path.lstrip('/')
-        query_str = match.group(4) or ""
+        query_str = parsed.query
 
         params_dict = {}
         if query_str:
@@ -105,15 +98,23 @@ def parse_remote_url(url: str) -> ParsedRemoteURL:
                 elif param:
                     params_dict[param] = ""
 
+        schemes.append(parsed.scheme)
         hosts.append(host)
         ports.append(port)
         paths.append(path)
+        usernames.append(parsed.username)
+        passwords.append(parsed.password)
         query_params.append(params_dict)
 
-    return ParsedRemoteURL(connector_type=connector_type,
+    if len(set(schemes)) > 1:
+        raise ValueError(f"Multiple connector types in remote url {url}")
+
+    return ParsedRemoteURL(connector_type=set(schemes).pop(),
                            hosts=hosts,
                            ports=ports,
                            paths=paths,
+                           usernames=usernames,
+                           passwords=passwords,
                            query_params=query_params)
 
 
@@ -139,7 +140,16 @@ def CreateConnector(
         case "redis":
             if num_hosts == 1:
                 host, port = parsed_url.hosts[0], parsed_url.ports[0]
-                connector = RedisConnector(host, port, loop, local_cpu_backend)
+                username = parsed_url.usernames[0]
+                password = parsed_url.passwords[0]
+                connector = RedisConnector(
+                    loop,
+                    local_cpu_backend,
+                    host,
+                    port,
+                    username,
+                    password
+                )
             else:
                 raise ValueError(
                     f"Redis connector only supports a single host, but got url:"

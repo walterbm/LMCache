@@ -41,10 +41,18 @@ class RedisConnector(RemoteConnector):
     The remote url should start with "redis://" and only have one host-port pair
     """
 
-    def __init__(self, host: str, port: int, loop: asyncio.AbstractEventLoop,
-                 local_cpu_backend: LocalCPUBackend):
+    def __init__(self,
+                 loop: asyncio.AbstractEventLoop,
+                 local_cpu_backend: LocalCPUBackend,
+                 host: str,
+                 port: int,
+                 username: Optional[str] = None,
+                 password: Optional[str] = None
+                ):
         self.connection = redis.Redis(host=host,
                                       port=port,
+                                      username=username,
+                                      password=password,
                                       decode_responses=False)
 
         self.loop = loop
