@@ -15,6 +15,8 @@
 import re
 from dataclasses import dataclass
 from typing import List, Optional
+from urllib.parse import urlparse
+
 
 from lmcache.config import GlobalConfig
 from lmcache.logging import init_logger
@@ -31,12 +33,15 @@ logger = init_logger(__name__)
 class ParsedRemoteURL:
     """
     The parsed URL of the format:
-    <connector_type>://<host>:<port>,<host2>:<port2>,...
+    <connector_type>://<username>:<password>@<host>:<port>,...
+    Each entry may have its own credentials.
     """
 
     connector_type: str
     hosts: List[str]
     ports: List[int]
+    usernames: List[Optional[str]]
+    passwords: List[Optional[str]]
 
 
 def parse_remote_url(url: str) -> ParsedRemoteURL:
@@ -46,30 +51,39 @@ def parse_remote_url(url: str) -> ParsedRemoteURL:
     Raises:
         ValueError: If the URL is invalid.
     """
-    pattern = r"(.+)://(.*)"
-    m = re.match(pattern, url)
-    if m is None:
-        logger.error(f"Cannot parse remote_url {url} in the config")
-        raise ValueError(f"Invalid remote url {url}")
-
-    connector_type, hosts_and_ports = m.group(1), m.group(2)
+    # Split once to get the scheme (connector type) and the rest
 
     hosts = []
     ports = []
-    for body in hosts_and_ports.split(","):
-        m = re.match(r"(.+):(\d+)", body)
-        if m is None:
-            logger.error(
-                f"Cannot parse url body {body} from remote_url {url} in the "
-                f"config")
+    usernames = []
+    passwords = []
+    schemes = []
+
+    for conn in url.split(","):
+        pattern = r"(?P<scheme>[^:]+)://(?P<body>.+)"
+        m = re.match(pattern, url)
+        if not m:
             raise ValueError(f"Invalid remote url {url}")
 
-        host, port = m.group(1), int(m.group(2))
-        hosts.append(host)
-        ports.append(port)
+        parsed = urlparse(conn)
+        if not parsed.hostname or not parsed.port:
+            raise ValueError(f"Invalid host:port pair in remote url {url}")
+        schemes.append(parsed.scheme)
+        hosts.append(parsed.hostname)
+        ports.append(parsed.port)
+        usernames.append(parsed.username)
+        passwords.append(parsed.password)
 
-    return ParsedRemoteURL(connector_type, hosts, ports)
+    if len(set(schemes)) > 1:
+        raise ValueError(f"Multiple connector types in remote url {url}")
 
+    return ParsedRemoteURL(
+        connector_type=set(schemes).pop(),
+        hosts=hosts,
+        ports=ports,
+        usernames=usernames,
+        passwords=passwords,
+    )
 
 def CreateConnector(url: str, device=None) -> RemoteConnector:
     """
@@ -88,7 +102,9 @@ def CreateConnector(url: str, device=None) -> RemoteConnector:
         case "redis":
             if num_hosts == 1:
                 host, port = parsed_url.hosts[0], parsed_url.ports[0]
-                connector = RedisConnector(host, port)
+                username = parsed_url.usernames[0]
+                password = parsed_url.passwords[0]
+                connector = RedisConnector(host, port, username, password)
             else:
                 raise ValueError(
                     f"Redis connector only supports a single host, but got url:"

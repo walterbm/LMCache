@@ -30,8 +30,19 @@ class RedisConnector(RemoteBytesConnector):
     The remote url should start with "redis://" and only have one host-port pair
     """
 
-    def __init__(self, host: str, port: int):
-        self.connection = redis.Redis(host=host, port=port)
+    def __init__(
+            self,
+            host: str,
+            port: int,
+            username: Optional[str] = None,
+            password: Optional[str] = None
+        ):
+        self.connection = redis.Redis(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
 
     def exists(self, key: str) -> bool:
         return bool(self.connection.exists(key))
